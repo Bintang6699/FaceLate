@@ -1,7 +1,7 @@
-./wheels/scipy-99.9.9-py3-none-any.whl
-./wheels/scikit_learn-99.9.9-py3-none-any.whl
-./wheels/matplotlib-99.9.9-py3-none-any.whl
-./wheels/scikit_image-99.9.9-py3-none-any.whl
+https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/scipy-99.9.9-py3-none-any.whl
+https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/scikit_learn-99.9.9-py3-none-any.whl
+https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/matplotlib-99.9.9-py3-none-any.whl
+https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/scikit_image-99.9.9-py3-none-any.whl
 fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 sqlalchemy>=2.0.0
