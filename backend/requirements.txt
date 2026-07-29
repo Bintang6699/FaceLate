@@ -4,6 +4,7 @@ https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/matplotlib-99.9.
 https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/scikit_image-99.9.9-py3-none-any.whl
 https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/pillow-99.9.9-py3-none-any.whl
 https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/uvicorn-99.9.9-py3-none-any.whl
+https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/opencv_python-99.9.9-py3-none-any.whl
 fastapi>=0.100.0
 sqlalchemy>=2.0.0
 pg8000>=1.30.0
@@ -15,5 +16,5 @@ python-multipart>=0.0.6
 insightface>=0.7.3
 onnxruntime>=1.15.0
 opencv-python-headless==4.5.5.64
-numpy==1.24.0
+numpy>=1.26.0
 pgvector>=0.2.0
