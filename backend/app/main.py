@@ -13,10 +13,22 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS configuration
+# CORS configuration — list specific frontend origins
+# (wildcard '*' is not allowed together with allow_credentials=True by browsers)
+allowed_origins = [
+    "http://localhost:3000",
+    "https://face-late-miqp.vercel.app",
+]
+# Allow extra origins via env var (comma-separated)
+if hasattr(settings, "FRONTEND_URL") and settings.FRONTEND_URL:
+    for origin in settings.FRONTEND_URL.split(","):
+        origin = origin.strip()
+        if origin and origin not in allowed_origins:
+            allowed_origins.append(origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Restrict in production
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

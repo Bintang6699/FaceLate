@@ -7,7 +7,7 @@ https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/uvicorn-99.9.9-p
 https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/opencv_python-99.9.9-py3-none-any.whl
 fastapi>=0.100.0
 sqlalchemy>=2.0.0
-pg8000>=1.30.0
+psycopg2-binary>=2.9.0
 passlib[bcrypt]>=1.7.4
 PyJWT>=2.8.0
 pydantic[email]>=2.0.0
