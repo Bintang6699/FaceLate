@@ -1,4 +1,3 @@
-import cv2
 import numpy as np
 
 # Lazy-load InsightFace to prevent crash at startup on Vercel
@@ -22,6 +21,8 @@ def extract_embedding(image_bytes: bytes) -> np.ndarray:
     Extract face embedding (512-dim vector) from image bytes.
     Raises ValueError if no face is found.
     """
+    import cv2
+    
     face_app = _get_face_app()
     
     # Convert image bytes to numpy array
