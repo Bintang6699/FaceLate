@@ -1,26 +1,29 @@
 import cv2
 import numpy as np
-import insightface
-from insightface.app import FaceAnalysis
 
-# Initialize InsightFace model
-# buffalo_sc = Small/Compact model — much faster than buffalo_l with good accuracy
-# det_size=(320, 320) = smaller detection size for speed
-# For a school attendance system at close range, this is more than sufficient
-try:
-    # On Vercel, only /tmp is writable. We must set root to /tmp for model storage.
-    face_app = FaceAnalysis(name='buffalo_sc', root='/tmp', providers=['CPUExecutionProvider'])
-except Exception:
-    # Fallback to buffalo_l if buffalo_sc is not available
-    face_app = FaceAnalysis(name='buffalo_l', root='/tmp', providers=['CPUExecutionProvider'])
+# Lazy-load InsightFace to prevent crash at startup on Vercel
+# (dummy dependencies like scipy would cause import errors if loaded eagerly)
+_face_app = None
 
-face_app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.4)
+def _get_face_app():
+    global _face_app
+    if _face_app is None:
+        import insightface
+        from insightface.app import FaceAnalysis
+        try:
+            _face_app = FaceAnalysis(name='buffalo_sc', root='/tmp', providers=['CPUExecutionProvider'])
+        except Exception:
+            _face_app = FaceAnalysis(name='buffalo_l', root='/tmp', providers=['CPUExecutionProvider'])
+        _face_app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.4)
+    return _face_app
 
 def extract_embedding(image_bytes: bytes) -> np.ndarray:
     """
     Extract face embedding (512-dim vector) from image bytes.
     Raises ValueError if no face is found.
     """
+    face_app = _get_face_app()
+    
     # Convert image bytes to numpy array
     nparr = np.frombuffer(image_bytes, np.uint8)
     
