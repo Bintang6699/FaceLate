@@ -8,10 +8,11 @@ from insightface.app import FaceAnalysis
 # det_size=(320, 320) = smaller detection size for speed
 # For a school attendance system at close range, this is more than sufficient
 try:
-    face_app = FaceAnalysis(name='buffalo_sc', providers=['CPUExecutionProvider'])
+    # On Vercel, only /tmp is writable. We must set root to /tmp for model storage.
+    face_app = FaceAnalysis(name='buffalo_sc', root='/tmp', providers=['CPUExecutionProvider'])
 except Exception:
     # Fallback to buffalo_l if buffalo_sc is not available
-    face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
+    face_app = FaceAnalysis(name='buffalo_l', root='/tmp', providers=['CPUExecutionProvider'])
 
 face_app.prepare(ctx_id=0, det_size=(640, 640), det_thresh=0.4)
 
