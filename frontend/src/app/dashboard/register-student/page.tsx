@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
-import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError } from "@/lib/face";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError, captureVideoFrame } from "@/lib/face";
 import { CameraIcon, ArrowLeftIcon, UserPlusIcon, Loader2, CheckCircle2Icon, RefreshCcwIcon } from "lucide-react";
 
 type CapturedFace = {
@@ -74,23 +74,9 @@ export default function RegisterStudentPage() {
     setError("");
 
     try {
-      const canvas = document.createElement("canvas");
-      const maxDim = 640; // keep detail so face detection stays accurate at angles
-      let width = videoRef.current.videoWidth;
-      let height = videoRef.current.videoHeight;
-      if (width > maxDim || height > maxDim) {
-        if (width > height) {
-          height = Math.round((height * maxDim) / width);
-          width = maxDim;
-        } else {
-          width = Math.round((width * maxDim) / height);
-          height = maxDim;
-        }
-      }
-      canvas.width = width;
-      canvas.height = height;
-      canvas.getContext("2d")!.drawImage(videoRef.current, 0, 0, width, height);
-
+      // Use the helper to safely grab a canvas frame, ensuring videoWidth is handled
+      const canvas = captureVideoFrame(videoRef.current, 640);
+      
       // Extract the face descriptor immediately — if no face is visible the
       // user finds out NOW (and stays on the same angle), not after submitting.
       const descriptor = await getFaceDescriptor(canvas, "accurate");

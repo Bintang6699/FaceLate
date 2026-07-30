@@ -79,17 +79,52 @@ export async function getFaceDescriptor(
 
   const detectorOptions =
     mode === "fast"
-      ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.4 })
-      : new faceapi.SsdMobilenetv1Options({ minConfidence: 0.35 });
+      ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 })
+      : new faceapi.SsdMobilenetv1Options({ maxResults: 1, minConfidence: 0.3 });
 
-  const result = await faceapi
-    .detectSingleFace(source, detectorOptions)
-    .withFaceLandmarks()
-    .withFaceDescriptor();
+  try {
+    const result = await faceapi
+      .detectSingleFace(source, detectorOptions)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
 
-  if (!result) {
-    throw new NoFaceDetectedError();
+    if (!result) {
+      throw new NoFaceDetectedError();
+    }
+
+    return Array.from(result.descriptor);
+  } catch (err: any) {
+    if (err instanceof NoFaceDetectedError) throw err;
+    console.error("Face detection error:", err);
+    throw new Error("Gagal memproses wajah. Pastikan model AI sudah dimuat dan kamera berfungsi.");
   }
+}
 
-  return Array.from(result.descriptor);
+/** Helper to extract a safely downscaled canvas from a video stream for faster mobile processing */
+export function captureVideoFrame(video: HTMLVideoElement, maxDim = 480): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  let width = video.videoWidth;
+  let height = video.videoHeight;
+  if (!width || !height) {
+    canvas.width = maxDim;
+    canvas.height = maxDim;
+    return canvas;
+  }
+  
+  if (width > maxDim || height > maxDim) {
+    if (width > height) {
+      height = Math.round((height * maxDim) / width);
+      width = maxDim;
+    } else {
+      width = Math.round((width * maxDim) / height);
+      height = maxDim;
+    }
+  }
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (ctx) {
+    ctx.drawImage(video, 0, 0, width, height);
+  }
+  return canvas;
 }

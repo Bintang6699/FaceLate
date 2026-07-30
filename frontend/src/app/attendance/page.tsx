@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { fetchApi } from "@/lib/api";
-import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError } from "@/lib/face";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError, captureVideoFrame } from "@/lib/face";
 import { CameraIcon, CheckCircleIcon, XCircleIcon, Loader2, PlayIcon, SquareIcon } from "lucide-react";
 
 export default function AttendanceCameraPage() {
@@ -62,8 +62,11 @@ export default function AttendanceCameraPage() {
     setRecentStudent(null);
 
     try {
+      // Use downscaled canvas for faster processing on mobile
+      const frameCanvas = captureVideoFrame(videoRef.current, 480);
+      
       // Face detection + descriptor run in the browser; backend only matches vectors
-      const descriptor = await getFaceDescriptor(videoRef.current, "fast");
+      const descriptor = await getFaceDescriptor(frameCanvas, "fast");
 
       const res = await fetchApi<any>("/attendance/recognize", {
         method: "POST",
@@ -115,15 +118,14 @@ export default function AttendanceCameraPage() {
     <div className="min-h-screen bg-black flex flex-col relative overflow-hidden">
       {/* Background Video */}
       <div className="absolute inset-0 z-0 flex items-center justify-center bg-slate-900">
-        {stream ? (
-          <video 
-            ref={videoRef} 
-            autoPlay 
-            playsInline 
-            muted 
-            className="w-full h-full object-cover transform scale-x-[-1] opacity-70"
-          />
-        ) : (
+        <video 
+          ref={videoRef} 
+          autoPlay 
+          playsInline 
+          muted 
+          className={`w-full h-full object-cover transform scale-x-[-1] opacity-70 ${!stream ? 'hidden' : ''}`}
+        />
+        {!stream && (
           <div className="text-white/50 flex flex-col items-center">
             <CameraIcon className="w-16 h-16 mb-4" />
             <p>Initializing Camera...</p>
