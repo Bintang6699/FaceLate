@@ -41,7 +41,9 @@ export function loadFaceModels(): Promise<void> {
       
       // Ensure TensorFlow uses WebGL backend for performance, preventing CPU freeze
       try {
+        // @ts-ignore - faceapi.tf typing might not include setBackend in this version
         await faceapi.tf.setBackend('webgl');
+        // @ts-ignore
         await faceapi.tf.ready();
       } catch (e) {
         console.warn("WebGL backend failed to initialize, falling back to default.", e);
