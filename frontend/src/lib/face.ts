@@ -32,6 +32,21 @@ export function areFaceModelsReady(): boolean {
   return modelsReady;
 }
 
+async function warmupFaceApi(faceapi: FaceApi) {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = 224;
+    canvas.height = 224;
+    // Run a tiny dummy detection to force WebGL shaders to compile NOW
+    // instead of freezing the UI during the user's first actual scan.
+    await faceapi.detectSingleFace(canvas, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.1 }))
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+  } catch (e) {
+    // Ignore warmup errors
+  }
+}
+
 /** Load all required neural network weights exactly once. */
 export function loadFaceModels(): Promise<void> {
   if (modelsReady) return Promise.resolve();
@@ -55,6 +70,10 @@ export function loadFaceModels(): Promise<void> {
         faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URI),
         faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URI),
       ]);
+      
+      // Warmup the model in the background
+      await warmupFaceApi(faceapi);
+
       modelsReady = true;
     })().catch((err) => {
       // Allow retry on next call if the download failed
@@ -89,10 +108,13 @@ export async function getFaceDescriptor(
   await loadFaceModels();
   const faceapi = await getFaceApi();
 
+  // EXTREMELY FORGIVING THRESHOLDS:
+  // 0.2 for fast, 0.15 for accurate. This allows side profiles (left/right/up/down) 
+  // and slightly blurry mobile camera shots to still be accepted during registration.
   const detectorOptions =
     mode === "fast"
-      ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 })
-      : new faceapi.SsdMobilenetv1Options({ maxResults: 1, minConfidence: 0.3 });
+      ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 })
+      : new faceapi.SsdMobilenetv1Options({ maxResults: 1, minConfidence: 0.15 });
 
   try {
     const result = await faceapi
