@@ -3,20 +3,30 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError } from "@/lib/face";
 import { CameraIcon, ArrowLeftIcon, UserPlusIcon, Loader2, CheckCircle2Icon, RefreshCcwIcon } from "lucide-react";
+
+type CapturedFace = {
+  dataUrl: string;
+  descriptor: number[];
+};
 
 export default function RegisterStudentPage() {
   const router = useRouter();
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Hard guard against double submissions (state updates are async,
+  // so rapid taps could otherwise slip through before `disabled` renders)
+  const submittingRef = useRef(false);
+  const capturingRef = useRef(false);
+
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [capturedImages, setCapturedImages] = useState<string[]>([]);
-  const [capturedBlobs, setCapturedBlobs] = useState<Blob[]>([]);
+  const [captures, setCaptures] = useState<CapturedFace[]>([]);
   const [step, setStep] = useState<"camera" | "form" | "success">("camera");
   const ANGLES = ["Depan", "Kiri", "Kanan", "Atas", "Bawah"];
-  const [currentAngleIndex, setCurrentAngleIndex] = useState(0);
+  const [capturing, setCapturing] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [classes, setClasses] = useState<any[]>([]);
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
 
   // Form fields
@@ -26,7 +36,12 @@ export default function RegisterStudentPage() {
 
   useEffect(() => {
     startCamera();
+    // Preload AI models in the background while the user positions the camera
+    loadFaceModels()
+      .then(() => setModelsLoaded(true))
+      .catch((e) => setError(e.message));
     return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [facingMode]);
 
   const startCamera = async () => {
@@ -35,6 +50,7 @@ export default function RegisterStudentPage() {
       const ms = await navigator.mediaDevices.getUserMedia({ video: { facingMode } });
       if (videoRef.current) videoRef.current.srcObject = ms;
       setStream(ms);
+      setError("");
     } catch {
       setError("Tidak bisa mengakses kamera. Izinkan akses kamera di browser.");
     }
@@ -52,10 +68,14 @@ export default function RegisterStudentPage() {
   };
 
   const capturePhoto = async () => {
-    if (!videoRef.current) return;
+    if (!videoRef.current || capturingRef.current) return;
+    capturingRef.current = true;
+    setCapturing(true);
+    setError("");
+
+    try {
       const canvas = document.createElement("canvas");
-      // Optimize image size to speed up processing
-      const maxDim = 320;
+      const maxDim = 640; // keep detail so face detection stays accurate at angles
       let width = videoRef.current.videoWidth;
       let height = videoRef.current.videoHeight;
       if (width > maxDim || height > maxDim) {
@@ -71,56 +91,76 @@ export default function RegisterStudentPage() {
       canvas.height = height;
       canvas.getContext("2d")!.drawImage(videoRef.current, 0, 0, width, height);
 
+      // Extract the face descriptor immediately — if no face is visible the
+      // user finds out NOW (and stays on the same angle), not after submitting.
+      const descriptor = await getFaceDescriptor(canvas, "accurate");
       const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
-      
-      const blob = await new Promise<Blob>((res, rej) => {
-        canvas.toBlob((b) => b ? res(b) : rej(), "image/jpeg", 0.7);
-      });
 
-      setCapturedImages(prev => [...prev, dataUrl]);
-      setCapturedBlobs(prev => [...prev, blob]);
+      const newCaptures = [...captures, { dataUrl, descriptor }];
+      setCaptures(newCaptures);
 
-      if (currentAngleIndex < ANGLES.length - 1) {
-        setCurrentAngleIndex(prev => prev + 1);
-      } else {
+      if (newCaptures.length >= ANGLES.length) {
         stopCamera();
         setStep("form");
       }
+    } catch (err: any) {
+      if (err instanceof NoFaceDetectedError) {
+        setError(`Wajah tidak terdeteksi pada posisi ${ANGLES[captures.length]}. Coba lagi dengan pencahayaan lebih baik.`);
+      } else {
+        setError(err.message || "Gagal memproses wajah. Coba lagi.");
+      }
+    } finally {
+      capturingRef.current = false;
+      setCapturing(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (capturedBlobs.length < 5) return;
+    // One submission only — blocks double-taps and retried clicks
+    if (submittingRef.current) return;
+    if (captures.length < ANGLES.length) {
+      setError("Foto wajah belum lengkap. Ulangi pengambilan foto.");
+      return;
+    }
+    submittingRef.current = true;
     setLoading(true);
     setError("");
 
     try {
-      // 1. Create student
-      const student = await fetchApi<any>("/students", {
+      // Single atomic request: student + all face embeddings in one transaction.
+      // If anything fails, nothing is saved (no more orphan students).
+      await fetchApi<any>("/students/register-with-faces", {
         method: "POST",
-        body: JSON.stringify({ name, class_name: className, address }),
+        body: JSON.stringify({
+          name,
+          class_name: className,
+          address,
+          embeddings: captures.map(c => c.descriptor),
+        }),
       });
-
-      // 2. Register all 5 faces
-      for (const blob of capturedBlobs) {
-        const fd = new FormData();
-        fd.append("student_id", student.id);
-        fd.append("file", blob, "face.jpg");
-
-        await fetchApi("/faces/register", {
-          method: "POST",
-          body: fd,
-          headers: { Accept: "application/json" },
-        });
-      }
 
       setStep("success");
     } catch (err: any) {
       setError(err.message || "Gagal menyimpan data siswa.");
+      submittingRef.current = false; // allow retry after an error
     } finally {
       setLoading(false);
     }
   };
+
+  const resetFlow = () => {
+    setStep("camera");
+    setCaptures([]);
+    setName("");
+    setClassName("");
+    setAddress("");
+    setError("");
+    submittingRef.current = false;
+    startCamera();
+  };
+
+  const currentAngleIndex = captures.length;
 
   return (
     <div className="max-w-xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -174,16 +214,42 @@ export default function RegisterStudentPage() {
                   <p className="text-sm">{error || "Memuat kamera..."}</p>
                 </div>
               )}
+              {capturing && (
+                <div className="absolute inset-0 bg-indigo-900/40 flex items-center justify-center">
+                  <div className="text-center text-white">
+                    <Loader2 className="w-10 h-10 animate-spin mx-auto mb-2" />
+                    <p className="text-sm font-medium">Memeriksa wajah...</p>
+                  </div>
+                </div>
+              )}
             </div>
+
+            {error && stream && <div className="bg-red-50 border border-red-100 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm">{error}</div>}
+
             <div className="flex items-center justify-between mb-4">
-              <p className="text-sm text-slate-500">Pastikan wajah berada di tengah kamera.</p>
+              <p className="text-sm text-slate-500">
+                {modelsLoaded ? "Pastikan wajah berada di tengah kamera." : "Memuat model AI, mohon tunggu..."}
+              </p>
               <button onClick={toggleCamera} className="flex items-center gap-2 text-sm font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">
                 <RefreshCcwIcon className="w-4 h-4" /> Tukar
               </button>
             </div>
-            <button onClick={capturePhoto} disabled={!stream}
+
+            {/* Progress dots for captured angles */}
+            <div className="flex items-center justify-center gap-2 mb-4">
+              {ANGLES.map((a, idx) => (
+                <div key={a} className={`w-2.5 h-2.5 rounded-full transition-colors ${idx < captures.length ? "bg-emerald-500" : idx === currentAngleIndex ? "bg-indigo-500" : "bg-slate-200"}`} title={a} />
+              ))}
+            </div>
+
+            <button onClick={capturePhoto} disabled={!stream || capturing || !modelsLoaded}
               className="w-full py-3 bg-[#4f46e5] hover:bg-[#4338ca] text-white font-semibold rounded-xl transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2">
-              <CameraIcon className="w-5 h-5" /> Jepret Hadap {ANGLES[currentAngleIndex]}
+              {capturing
+                ? <><Loader2 className="w-5 h-5 animate-spin" /> Memproses...</>
+                : !modelsLoaded
+                  ? <><Loader2 className="w-5 h-5 animate-spin" /> Memuat Model AI...</>
+                  : <><CameraIcon className="w-5 h-5" /> Jepret Hadap {ANGLES[currentAngleIndex]}</>
+              }
             </button>
           </div>
         )}
@@ -191,17 +257,17 @@ export default function RegisterStudentPage() {
         {/* STEP 2: Form */}
         {step === "form" && (
           <div className="p-6">
-            {capturedImages.length > 0 && (
+            {captures.length > 0 && (
               <div className="mb-6 p-4 bg-indigo-50 rounded-xl border border-indigo-100">
                 <div className="flex items-center justify-between mb-3">
-                  <p className="text-sm font-semibold text-indigo-800">{capturedImages.length} Foto berhasil diambil</p>
-                  <button onClick={() => { setStep("camera"); setCapturedImages([]); setCapturedBlobs([]); setCurrentAngleIndex(0); startCamera(); }}
+                  <p className="text-sm font-semibold text-indigo-800">{captures.length} Foto berhasil diambil</p>
+                  <button onClick={resetFlow}
                     className="text-xs text-indigo-600 underline font-medium">Ulangi Kamera</button>
                 </div>
                 <div className="flex gap-2 overflow-x-auto pb-2">
-                  {capturedImages.map((img, idx) => (
+                  {captures.map((c, idx) => (
                     <div key={idx} className="relative shrink-0">
-                      <img src={img} alt={`Wajah ${idx}`} className="w-14 h-14 rounded-lg object-cover scale-x-[-1] border-2 border-white shadow-sm" />
+                      <img src={c.dataUrl} alt={`Wajah ${idx}`} className="w-14 h-14 rounded-lg object-cover scale-x-[-1] border-2 border-white shadow-sm" />
                       <div className="absolute -bottom-1 -right-1 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-md leading-none">
                         {ANGLES[idx]}
                       </div>
@@ -233,9 +299,9 @@ export default function RegisterStudentPage() {
                   placeholder="Alamat rumah siswa"
                   className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition-all resize-none" />
               </div>
-              <button type="submit" disabled={loading || !className}
+              <button type="submit" disabled={loading || !className || !name}
                 className="w-full py-3 bg-[#4f46e5] hover:bg-[#4338ca] text-white font-semibold rounded-xl transition-all active:scale-[0.98] disabled:opacity-50 flex items-center justify-center gap-2 mt-2">
-                {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <><UserPlusIcon className="w-5 h-5" /> Simpan & Daftarkan</>}
+                {loading ? <><Loader2 className="w-5 h-5 animate-spin" /> Menyimpan...</> : <><UserPlusIcon className="w-5 h-5" /> Simpan & Daftarkan</>}
               </button>
             </form>
           </div>
@@ -250,7 +316,7 @@ export default function RegisterStudentPage() {
             <h3 className="text-xl font-bold text-slate-800 mb-2">Siswa Berhasil Terdaftar!</h3>
             <p className="text-slate-500 text-sm mb-6">Data dan wajah siswa <strong>{name}</strong> telah tersimpan.</p>
             <div className="flex gap-3 w-full">
-              <button onClick={() => { setStep("camera"); setCapturedImages([]); setCapturedBlobs([]); setCurrentAngleIndex(0); setName(""); setClassName(""); setAddress(""); setError(""); startCamera(); }}
+              <button onClick={resetFlow}
                 className="flex-1 py-2.5 border border-indigo-300 text-indigo-600 font-medium rounded-xl hover:bg-indigo-50 transition-all text-sm">
                 Daftar Siswa Lain
               </button>

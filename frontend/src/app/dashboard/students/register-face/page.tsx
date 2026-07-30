@@ -1,27 +1,43 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { fetchApi } from "@/lib/api";
-import { CameraIcon, UploadCloudIcon, CheckCircle2Icon, Loader2, RefreshCcwIcon } from "lucide-react";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError } from "@/lib/face";
+import { CameraIcon, CheckCircle2Icon, Loader2, RefreshCcwIcon } from "lucide-react";
 
-export default function RegisterFacePage() {
+function RegisterFaceContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const studentId = searchParams.get("id");
   const studentName = searchParams.get("name") || "Student";
-  
+
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Hard guards so rapid taps can never fire twice
+  const busyRef = useRef(false);
+
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [loading, setLoading] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [status, setStatus] = useState<"idle" | "capturing" | "success" | "error">("idle");
   const [message, setMessage] = useState("");
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
-  
-  const ANGLES = ["Depan", "Kiri", "Kanan", "Atas", "Bawah"];
-  const [currentAngleIndex, setCurrentAngleIndex] = useState(0);
 
-  const startCamera = async () => {
+  const ANGLES = ["Depan", "Kiri", "Kanan", "Atas", "Bawah"];
+  const [descriptors, setDescriptors] = useState<number[][]>([]);
+
+  const stopCamera = useCallback(() => {
+    if (videoRef.current?.srcObject) {
+      const ms = videoRef.current.srcObject as MediaStream;
+      ms.getTracks().forEach(track => track.stop());
+    }
+    setStream(prev => {
+      prev?.getTracks().forEach(track => track.stop());
+      return null;
+    });
+  }, []);
+
+  const startCamera = useCallback(async () => {
     stopCamera();
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode } });
@@ -29,57 +45,42 @@ export default function RegisterFacePage() {
         videoRef.current.srcObject = mediaStream;
       }
       setStream(mediaStream);
-    } catch (error) {
+      setStatus("idle");
+      setMessage("");
+    } catch {
       setStatus("error");
-      setMessage("Failed to access camera. Please allow permissions.");
+      setMessage("Tidak bisa mengakses kamera. Izinkan akses kamera di browser.");
     }
-  };
-
-  const stopCamera = useCallback(() => {
-    if (videoRef.current?.srcObject) {
-      const ms = videoRef.current.srcObject as MediaStream;
-      ms.getTracks().forEach(track => track.stop());
-    }
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
-  }, [stream]);
+  }, [facingMode, stopCamera]);
 
   useEffect(() => {
-    return () => {
-      // Direct cleanup to avoid stale closures
-      if (videoRef.current?.srcObject) {
-        const ms = videoRef.current.srcObject as MediaStream;
-        ms.getTracks().forEach(track => track.stop());
-      }
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [stream]);
+    startCamera();
+    loadFaceModels()
+      .then(() => setModelsLoaded(true))
+      .catch((e) => {
+        setStatus("error");
+        setMessage(e.message);
+      });
+    return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [facingMode]);
 
   const toggleCamera = () => {
     setFacingMode(prev => prev === "user" ? "environment" : "user");
-    // We don't automatically restart here because startCamera is usually triggered by a button in this UI,
-    // but we can if we want. Actually, let's just let the user click "Start Camera" again, or restart if stream exists.
-    if (stream) {
-      setTimeout(() => startCamera(), 100);
-    }
   };
 
-  const captureAndRegister = async () => {
-    if (!videoRef.current || !studentId) return;
-
+  // Capture one frame, validate a face is present, keep its descriptor locally.
+  // All 5 descriptors are sent to the backend only after the full set is complete.
+  const captureAngle = async () => {
+    if (!videoRef.current || !studentId || busyRef.current) return;
+    busyRef.current = true;
     setStatus("capturing");
-    setMessage(`Menyimpan posisi ${ANGLES[currentAngleIndex]}...`);
+    setMessage(`Memeriksa posisi ${ANGLES[descriptors.length]}...`);
     setLoading(true);
 
     try {
-      // Create canvas to draw the video frame
       const canvas = document.createElement("canvas");
-      // Optimize image size to speed up processing
-      const maxDim = 320;
+      const maxDim = 640;
       let width = videoRef.current.videoWidth;
       let height = videoRef.current.videoHeight;
       if (width > maxDim || height > maxDim) {
@@ -93,62 +94,59 @@ export default function RegisterFacePage() {
       }
       canvas.width = width;
       canvas.height = height;
-      const ctx = canvas.getContext("2d");
-      
-      if (!ctx) throw new Error("Canvas context failed");
-      
-      ctx.drawImage(videoRef.current, 0, 0, width, height);
-      
-      // Convert to blob
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((b) => {
-          if (b) resolve(b);
-          else reject(new Error("Failed to create blob"));
-        }, "image/jpeg", 0.7);
-      });
+      canvas.getContext("2d")!.drawImage(videoRef.current, 0, 0, width, height);
 
-      // Prepare form data
-      const formData = new FormData();
-      formData.append("student_id", studentId);
-      formData.append("clear_existing", currentAngleIndex === 0 ? "true" : "false");
-      formData.append("file", blob, "face.jpg");
+      const descriptor = await getFaceDescriptor(canvas, "accurate");
+      const newDescriptors = [...descriptors, descriptor];
+      setDescriptors(newDescriptors);
 
-      setMessage("Sending to AI Model...");
-
-      // Send to API
-      const res = await fetchApi<{ message: string }>("/faces/register", {
-        method: "POST",
-        body: formData,
-        // Don't set Content-Type header when sending FormData, fetch will do it with the boundary
-        headers: { "Accept": "application/json" }
-      });
-
-      if (currentAngleIndex < ANGLES.length - 1) {
-        setCurrentAngleIndex(prev => prev + 1);
+      if (newDescriptors.length >= ANGLES.length) {
+        // Full set captured — submit sequentially (first request clears old data)
+        setMessage("Menyimpan wajah ke server...");
+        for (let i = 0; i < newDescriptors.length; i++) {
+          await fetchApi<{ message: string }>("/faces/register", {
+            method: "POST",
+            body: JSON.stringify({
+              student_id: studentId,
+              embedding: newDescriptors[i],
+              clear_existing: i === 0,
+            }),
+          });
+        }
+        setStatus("success");
+        setMessage("Semua sisi wajah berhasil didaftarkan!");
+        stopCamera();
+        setTimeout(() => router.push("/dashboard/students"), 2000);
+      } else {
         setStatus("idle");
         setMessage("");
-        setLoading(false);
-      } else {
-        setStatus("success");
-        setMessage(res.message || "Semua sisi wajah berhasil didaftarkan!");
-        stopCamera();
-        
-        // Redirect after 2s
-        setTimeout(() => {
-          router.push("/dashboard/students");
-        }, 2000);
       }
-
     } catch (err: any) {
       setStatus("error");
-      setMessage(err.message || "Gagal menyimpan wajah.");
+      if (err instanceof NoFaceDetectedError) {
+        setMessage(`Wajah tidak terdeteksi pada posisi ${ANGLES[descriptors.length]}. Coba lagi.`);
+      } else {
+        setMessage(err.message || "Gagal menyimpan wajah.");
+      }
+    } finally {
       setLoading(false);
+      busyRef.current = false;
     }
+  };
+
+  const retry = () => {
+    setDescriptors([]);
+    setStatus("idle");
+    setMessage("");
+    busyRef.current = false;
+    startCamera();
   };
 
   if (!studentId) {
     return <div className="p-8 text-center text-red-500">Error: No student selected. Go back to student list.</div>;
   }
+
+  const currentAngleIndex = descriptors.length;
 
   return (
     <div className="max-w-2xl mx-auto animate-in fade-in zoom-in-95 duration-500">
@@ -158,7 +156,7 @@ export default function RegisterFacePage() {
       </div>
 
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-xl overflow-hidden p-6 text-center relative">
-        
+
         {status === "success" ? (
           <div className="py-20 flex flex-col items-center justify-center">
             <div className="h-24 w-24 bg-green-100 dark:bg-green-900/30 text-green-600 rounded-full flex items-center justify-center mb-6 animate-bounce">
@@ -178,29 +176,44 @@ export default function RegisterFacePage() {
               </p>
             </div>
 
+            {/* Progress dots */}
+            <div className="flex items-center justify-center gap-2 mb-4">
+              {ANGLES.map((a, idx) => (
+                <div key={a} className={`w-2.5 h-2.5 rounded-full transition-colors ${idx < descriptors.length ? "bg-emerald-500" : idx === currentAngleIndex ? "bg-indigo-500" : "bg-slate-200"}`} title={a} />
+              ))}
+            </div>
+
             <div className="relative aspect-video bg-slate-100 dark:bg-slate-950 rounded-2xl overflow-hidden mb-4 flex items-center justify-center border-2 border-dashed border-slate-300 dark:border-slate-800">
               {stream ? (
-                <video 
-                  ref={videoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
                   className={`w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`}
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center text-slate-400">
                   <CameraIcon className="h-12 w-12 mb-4 opacity-50" />
-                  <p>Camera is offline</p>
+                  <p>Kamera tidak aktif</p>
                 </div>
               )}
 
-              {/* Status Overlay */}
-              {status === "error" && (
-                <div className="absolute inset-0 bg-red-900/80 flex items-center justify-center p-6 text-white text-sm">
-                  {message}
+              {status === "capturing" && (
+                <div className="absolute inset-0 bg-indigo-900/40 flex items-center justify-center p-6 text-white text-sm">
+                  <div className="text-center">
+                    <Loader2 className="w-10 h-10 animate-spin mx-auto mb-2" />
+                    {message}
+                  </div>
                 </div>
               )}
             </div>
+
+            {status === "error" && message && (
+              <div className="bg-red-50 border border-red-100 text-red-600 px-4 py-3 rounded-xl mb-4 text-sm">
+                {message}
+              </div>
+            )}
 
             {stream && (
               <div className="flex justify-end mb-6">
@@ -212,29 +225,31 @@ export default function RegisterFacePage() {
 
             <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
               {!stream ? (
-                <button 
+                <button
                   onClick={startCamera}
                   className="px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white dark:bg-slate-100 dark:hover:bg-white dark:text-slate-900 rounded-xl font-medium transition-colors w-full sm:w-auto flex items-center justify-center"
                 >
                   <CameraIcon className="w-5 h-5 mr-2" />
-                  Start Camera
+                  Nyalakan Kamera
                 </button>
               ) : (
                 <>
-                  <button 
-                    onClick={stopCamera}
+                  <button
+                    onClick={retry}
                     disabled={loading}
-                    className="px-6 py-3 bg-slate-200 hover:bg-slate-300 text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 rounded-xl font-medium transition-colors w-full sm:w-auto"
+                    className="px-6 py-3 bg-slate-200 hover:bg-slate-300 text-slate-800 dark:bg-slate-800 dark:hover:bg-slate-700 dark:text-slate-200 rounded-xl font-medium transition-colors w-full sm:w-auto disabled:opacity-50"
                   >
-                    Batal
+                    Ulangi dari Awal
                   </button>
-                  <button 
-                    onClick={captureAndRegister}
-                    disabled={loading}
+                  <button
+                    onClick={captureAngle}
+                    disabled={loading || !modelsLoaded}
                     className="px-6 py-3 bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl font-medium shadow-lg transition-all active:scale-95 w-full sm:w-auto flex items-center justify-center disabled:opacity-70"
                   >
                     {loading ? (
                       <><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Menyimpan...</>
+                    ) : !modelsLoaded ? (
+                      <><Loader2 className="w-5 h-5 mr-2 animate-spin" /> Memuat Model AI...</>
                     ) : (
                       <><CameraIcon className="w-5 h-5 mr-2" /> Jepret Hadap {ANGLES[currentAngleIndex]}</>
                     )}
@@ -242,12 +257,21 @@ export default function RegisterFacePage() {
                 </>
               )}
             </div>
-            {message && status === "capturing" && (
-              <p className="mt-4 text-sm text-primary animate-pulse">{message}</p>
-            )}
           </>
         )}
       </div>
     </div>
+  );
+}
+
+export default function RegisterFacePage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin h-8 w-8 text-primary" />
+      </div>
+    }>
+      <RegisterFaceContent />
+    </Suspense>
   );
 }

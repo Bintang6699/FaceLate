@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { fetchApi } from "@/lib/api";
+import { fetchApi, API_BASE_URL } from "@/lib/api";
 import { CameraIcon, UserPlusIcon, TrashIcon, EditIcon, AlertTriangleIcon, SearchIcon, LayersIcon, ClockIcon, DownloadIcon, PlusIcon, MinusIcon, RefreshCcwIcon } from "lucide-react";
 
 export default function StudentsPage() {
@@ -19,6 +19,10 @@ export default function StudentsPage() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [downloadClass, setDownloadClass] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [busyAction, setBusyAction] = useState(false);
+  // Hard guard so rapid taps can never fire the same mutation twice
+  const actionRef = useRef(false);
 
   const loadHistory = async (student: any) => {
     setHistoryStudent(student);
@@ -52,26 +56,37 @@ export default function StudentsPage() {
 
   const handleDeleteStudent = async (id: string) => {
     if (!confirm("Yakin ingin menghapus data siswa ini?")) return;
+    if (actionRef.current) return;
+    actionRef.current = true;
     try {
       await fetchApi(`/students/${id}`, { method: "DELETE" });
       loadData();
     } catch (e) {
       alert("Gagal menghapus siswa");
+    } finally {
+      actionRef.current = false;
     }
   };
 
   const handleBulkDelete = async () => {
-    if (!bulkDeleteClass) return;
+    if (!bulkDeleteClass || actionRef.current) return;
+    actionRef.current = true;
+    setBusyAction(true);
     try {
       await fetchApi(`/students/class/${encodeURIComponent(bulkDeleteClass)}`, { method: "DELETE" });
       setBulkDeleteClass(null);
       loadData();
     } catch (e) {
       alert("Gagal menghapus data kelas");
+    } finally {
+      actionRef.current = false;
+      setBusyAction(false);
     }
   };
 
   const handleAdjustLates = async (id: string, amount: number) => {
+    if (actionRef.current) return;
+    actionRef.current = true;
     try {
       await fetchApi(`/students/${id}/adjust-lates`, {
         method: "POST",
@@ -80,11 +95,15 @@ export default function StudentsPage() {
       loadData();
     } catch (e) {
       alert("Gagal mengubah nilai keterlambatan");
+    } finally {
+      actionRef.current = false;
     }
   };
 
   const handleResetClassLates = async () => {
-    if (!resetLatesClass) return;
+    if (!resetLatesClass || actionRef.current) return;
+    actionRef.current = true;
+    setBusyAction(true);
     try {
       await fetchApi(`/students/class/${encodeURIComponent(resetLatesClass)}/reset-lates`, {
         method: "POST"
@@ -94,12 +113,17 @@ export default function StudentsPage() {
       alert(`Berhasil mereset nilai absensi kelas ${resetLatesClass}`);
     } catch (e) {
       alert("Gagal mereset absen kelas");
+    } finally {
+      actionRef.current = false;
+      setBusyAction(false);
     }
   };
 
   const handleUpdateStudent = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editStudent) return;
+    if (!editStudent || actionRef.current) return;
+    actionRef.current = true;
+    setSavingEdit(true);
     try {
       await fetchApi(`/students/${editStudent.id}`, {
         method: "PUT",
@@ -113,6 +137,9 @@ export default function StudentsPage() {
       loadData();
     } catch (e) {
       alert("Gagal mengupdate siswa");
+    } finally {
+      actionRef.current = false;
+      setSavingEdit(false);
     }
   };
 
@@ -129,7 +156,7 @@ export default function StudentsPage() {
     setDownloading(true);
     try {
       const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
-      const res = await fetch(`http://localhost:8000/api/reports/students/pdf/${encodeURIComponent(downloadClass)}`, {
+      const res = await fetch(`${API_BASE_URL}/reports/students/pdf/${encodeURIComponent(downloadClass)}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!res.ok) {
@@ -312,8 +339,10 @@ export default function StudentsPage() {
                 </div>
                 
                 <div className="flex gap-3 pt-4">
-                  <button type="button" onClick={() => setEditStudent(null)} className="flex-1 px-4 py-2.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium transition-colors">Batal</button>
-                  <button type="submit" className="flex-1 px-4 py-2.5 text-white bg-primary hover:bg-primary/90 rounded-xl font-medium transition-colors">Simpan</button>
+                  <button type="button" onClick={() => setEditStudent(null)} disabled={savingEdit} className="flex-1 px-4 py-2.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium transition-colors disabled:opacity-50">Batal</button>
+                  <button type="submit" disabled={savingEdit} className="flex-1 px-4 py-2.5 text-white bg-primary hover:bg-primary/90 rounded-xl font-medium transition-colors disabled:opacity-50">
+                    {savingEdit ? "Menyimpan..." : "Simpan"}
+                  </button>
                 </div>
               </form>
             </div>
@@ -351,8 +380,8 @@ export default function StudentsPage() {
               </div>
               
               <div className="flex gap-3">
-                <button type="button" onClick={() => setBulkDeleteClass(null)} className="flex-1 px-4 py-2.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium transition-colors">Batal</button>
-                <button type="button" onClick={handleBulkDelete} disabled={!bulkDeleteClass} className="flex-1 px-4 py-2.5 text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl font-medium transition-colors">Hapus Semua</button>
+                <button type="button" onClick={() => setBulkDeleteClass(null)} disabled={busyAction} className="flex-1 px-4 py-2.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium transition-colors disabled:opacity-50">Batal</button>
+                <button type="button" onClick={handleBulkDelete} disabled={!bulkDeleteClass || busyAction} className="flex-1 px-4 py-2.5 text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl font-medium transition-colors">{busyAction ? "Memproses..." : "Hapus Semua"}</button>
               </div>
             </div>
           </div>
@@ -389,8 +418,8 @@ export default function StudentsPage() {
               </div>
               
               <div className="flex gap-3">
-                <button type="button" onClick={() => setResetLatesClass(null)} className="flex-1 px-4 py-2.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium transition-colors">Batal</button>
-                <button type="button" onClick={handleResetClassLates} disabled={!resetLatesClass} className="flex-1 px-4 py-2.5 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl font-medium transition-colors">Reset Kelas</button>
+                <button type="button" onClick={() => setResetLatesClass(null)} disabled={busyAction} className="flex-1 px-4 py-2.5 text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-xl font-medium transition-colors disabled:opacity-50">Batal</button>
+                <button type="button" onClick={handleResetClassLates} disabled={!resetLatesClass || busyAction} className="flex-1 px-4 py-2.5 text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl font-medium transition-colors">{busyAction ? "Memproses..." : "Reset Kelas"}</button>
               </div>
             </div>
           </div>

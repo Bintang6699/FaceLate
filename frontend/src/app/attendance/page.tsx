@@ -2,21 +2,30 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { fetchApi } from "@/lib/api";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError } from "@/lib/face";
 import { CameraIcon, CheckCircleIcon, XCircleIcon, Loader2, PlayIcon, SquareIcon } from "lucide-react";
 
 export default function AttendanceCameraPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Hard guard so overlapping intervals can never run two scans at once
+  const scanningRef = useRef(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isAutoScanning, setIsAutoScanning] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [status, setStatus] = useState<"idle" | "scanning" | "success" | "error">("idle");
   const [message, setMessage] = useState("Ready to scan");
   const [recentStudent, setRecentStudent] = useState<{name: string, similarity: number} | null>(null);
 
-  // Initialize Camera
+  // Initialize Camera + preload AI models
   useEffect(() => {
+    let cancelled = false;
     const initCamera = async () => {
       try {
         const mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+        if (cancelled) {
+          mediaStream.getTracks().forEach(t => t.stop());
+          return;
+        }
         if (videoRef.current) {
           videoRef.current.srcObject = mediaStream;
         }
@@ -28,41 +37,37 @@ export default function AttendanceCameraPage() {
       }
     };
     initCamera();
+    loadFaceModels()
+      .then(() => setModelsLoaded(true))
+      .catch((e) => {
+        setStatus("error");
+        setMessage(e.message);
+      });
 
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      cancelled = true;
+      if (videoRef.current?.srcObject) {
+        const ms = videoRef.current.srcObject as MediaStream;
+        ms.getTracks().forEach(track => track.stop());
       }
     };
   }, []);
 
   const captureAndRecognize = useCallback(async () => {
-    if (!videoRef.current || status === "scanning") return;
+    if (!videoRef.current || scanningRef.current || !modelsLoaded) return;
+    scanningRef.current = true;
 
     setStatus("scanning");
     setMessage("Analyzing face...");
     setRecentStudent(null);
 
     try {
-      const canvas = document.createElement("canvas");
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
-      const ctx = canvas.getContext("2d");
-      
-      if (!ctx) throw new Error("Canvas context failed");
-      ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
-      
-      const blob = await new Promise<Blob>((resolve, reject) => {
-        canvas.toBlob((b) => b ? resolve(b) : reject(new Error("Blob failed")), "image/jpeg", 0.9);
-      });
-
-      const formData = new FormData();
-      formData.append("file", blob, "attendance.jpg");
+      // Face detection + descriptor run in the browser; backend only matches vectors
+      const descriptor = await getFaceDescriptor(videoRef.current, "fast");
 
       const res = await fetchApi<any>("/attendance/recognize", {
         method: "POST",
-        body: formData,
-        headers: { "Accept": "application/json" } // Fetch handles multipart boundary
+        body: JSON.stringify({ embedding: descriptor }),
       });
 
       setStatus("success");
@@ -73,9 +78,18 @@ export default function AttendanceCameraPage() {
       });
 
     } catch (err: any) {
+      if (err instanceof NoFaceDetectedError) {
+        // No face in frame — quietly go back to idle
+        setStatus("idle");
+        setMessage("Ready to scan");
+        scanningRef.current = false;
+        return;
+      }
       setStatus("error");
       setMessage(err.message || "Face not recognized.");
     }
+
+    scanningRef.current = false;
 
     // Reset status after a delay
     setTimeout(() => {
@@ -83,18 +97,18 @@ export default function AttendanceCameraPage() {
       setMessage("Ready to scan");
     }, 3000);
 
-  }, [status]);
+  }, [modelsLoaded]);
 
   // Auto-scan interval
   useEffect(() => {
     let interval: NodeJS.Timeout;
-    if (isAutoScanning && stream && status === "idle") {
+    if (isAutoScanning && stream && modelsLoaded && status === "idle") {
       interval = setInterval(() => {
         captureAndRecognize();
       }, 4000); // Trigger every 4 seconds when idle
     }
     return () => clearInterval(interval);
-  }, [isAutoScanning, stream, status, captureAndRecognize]);
+  }, [isAutoScanning, stream, modelsLoaded, status, captureAndRecognize]);
 
 
   return (
@@ -192,7 +206,7 @@ export default function AttendanceCameraPage() {
           {!isAutoScanning && (
             <button 
               onClick={captureAndRecognize}
-              disabled={status !== "idle" || !stream}
+              disabled={status !== "idle" || !stream || !modelsLoaded}
               className="glass hover:bg-white/10 active:bg-white/20 transition-all px-8 py-4 rounded-full flex items-center justify-center text-white font-bold tracking-wide shadow-2xl disabled:opacity-50"
             >
               <CameraIcon className="w-6 h-6 mr-3" />

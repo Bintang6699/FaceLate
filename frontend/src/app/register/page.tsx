@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { fetchApi } from "@/lib/api";
@@ -13,9 +13,13 @@ export default function RegisterPage() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // Hard guard: blocks double-taps before React re-renders the disabled state
+  const submittingRef = useRef(false);
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     setLoading(true);
     setError("");
 
@@ -30,6 +34,7 @@ export default function RegisterPage() {
       router.push("/login");
     } catch (err: any) {
       setError(err.message || "Registration failed");
+      submittingRef.current = false;
     } finally {
       setLoading(false);
     }

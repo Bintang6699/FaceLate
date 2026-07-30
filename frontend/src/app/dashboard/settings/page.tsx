@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchApi } from "@/lib/api";
 import { SaveIcon, Loader2, ShieldCheckIcon, UserIcon } from "lucide-react";
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Hard guard: blocks double-taps before React re-renders the disabled state
+  const savingRef = useRef(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // Profile form state
@@ -34,6 +36,8 @@ export default function SettingsPage() {
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setMessage(null);
     try {
@@ -45,6 +49,7 @@ export default function SettingsPage() {
     } catch (err: any) {
       setMessage({ type: "error", text: err.message || "Failed to update profile." });
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -59,6 +64,8 @@ export default function SettingsPage() {
       setMessage({ type: "error", text: "Password must be at least 6 characters." });
       return;
     }
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setMessage(null);
     try {
@@ -72,6 +79,7 @@ export default function SettingsPage() {
     } catch (err: any) {
       setMessage({ type: "error", text: err.message || "Failed to change password." });
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };

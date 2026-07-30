@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .. import schemas, models, database
 from ..auth import get_current_teacher
@@ -73,6 +73,26 @@ def record_attendance(
     student = db.query(models.Student).filter(models.Student.id == request.student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
+
+    # Idempotency guard: max ONE late record per student per day (WITA calendar).
+    # This is the server-side safety net so double-taps, network retries, or
+    # scanning the same student twice can never insert duplicate rows, even if
+    # the frontend guard is bypassed.
+    WITA_OFFSET = timedelta(hours=8)
+    recent = (
+        db.query(models.LateHistory)
+        .filter(models.LateHistory.student_id == student.id)
+        .order_by(models.LateHistory.late_time.desc())
+        .first()
+    )
+    if recent and recent.late_time:
+        existing_day = (recent.late_time + WITA_OFFSET).date()
+        new_day = (request.client_time + WITA_OFFSET).date()
+        if existing_day == new_day:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"{student.name} sudah tercatat terlambat hari ini. Data ganda tidak disimpan."
+            )
 
     # Record Late History
     new_late = models.LateHistory(
