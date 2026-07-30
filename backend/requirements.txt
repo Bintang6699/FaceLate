@@ -8,7 +8,7 @@ https://github.com/Bintang6699/FaceLate/raw/main/backend/wheels/opencv_python-99
 fastapi>=0.100.0
 sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
-passlib[bcrypt]>=1.7.4
+bcrypt>=4.0.0
 PyJWT>=2.8.0
 pydantic[email]>=2.0.0
 pydantic-settings>=2.0.0
