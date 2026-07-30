@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
-import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError } from "@/lib/face";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError, captureVideoFrame } from "@/lib/face";
 import { CameraIcon, ArrowLeftIcon, ScanFaceIcon, CheckCircle2Icon, XCircleIcon, Loader2, ClockIcon, RefreshCcwIcon } from "lucide-react";
 
 type RecognizeResult = {
@@ -81,9 +81,15 @@ export default function ScanAttendancePage() {
     setShowPopup(false);
     setError("");
 
+    // Yield to the browser to paint the UI (spinner) before blocking thread with face-api
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
     try {
+      // Use downscaled canvas for faster processing on mobile
+      const frameCanvas = captureVideoFrame(videoRef.current, 480);
+
       // Face detection + descriptor extraction happen right here in the browser
-      const descriptor = await getFaceDescriptor(videoRef.current, "fast");
+      const descriptor = await getFaceDescriptor(frameCanvas, "fast");
 
       const data = await fetchApi<RecognizeResult>("/attendance/recognize", {
         method: "POST",
@@ -178,9 +184,8 @@ export default function ScanAttendancePage() {
 
         {/* Camera View */}
         <div className="relative aspect-video bg-slate-100 rounded-xl overflow-hidden mb-5 flex items-center justify-center">
-          {stream ? (
-            <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`} />
-          ) : (
+          <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""} ${!stream ? 'hidden' : ''}`} />
+          {!stream && (
             <div className="text-slate-400 flex flex-col items-center">
               <CameraIcon className="w-10 h-10 mb-2 opacity-40" />
               <p className="text-sm">{error || "Memuat kamera..."}</p>
