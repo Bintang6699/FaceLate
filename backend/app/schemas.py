@@ -1,7 +1,18 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from uuid import UUID
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+
+# Face descriptors are 128-dim vectors produced in the browser by face-api.js
+FACE_EMBEDDING_DIM = 128
+
+
+def _validate_embedding(values: List[float]) -> List[float]:
+    if len(values) != FACE_EMBEDDING_DIM:
+        raise ValueError(f"Embedding must have exactly {FACE_EMBEDDING_DIM} dimensions")
+    if any((v != v) or v in (float("inf"), float("-inf")) for v in values):  # NaN/Inf guard
+        raise ValueError("Embedding contains invalid values")
+    return values
 
 # --- TEACHER SCHEMAS ---
 class TeacherBase(BaseModel):
@@ -49,6 +60,28 @@ class StudentAdjustLatesRequest(BaseModel):
 
 
 # --- FACE & ATTENDANCE SCHEMAS ---
+class FaceRegisterRequest(BaseModel):
+    student_id: UUID
+    embedding: List[float]
+    clear_existing: bool = False
+
+    _check_embedding = field_validator("embedding")(_validate_embedding)
+
+class StudentRegisterWithFacesRequest(BaseModel):
+    name: str
+    class_name: str
+    address: Optional[str] = None
+    embeddings: List[List[float]] = Field(..., min_length=1, max_length=10)
+
+    _check_embeddings = field_validator("embeddings")(
+        lambda v: [_validate_embedding(e) for e in v]
+    )
+
+class FaceRecognizeRequest(BaseModel):
+    embedding: List[float]
+
+    _check_embedding = field_validator("embedding")(_validate_embedding)
+
 class FaceRegistrationResponse(BaseModel):
     student_id: UUID
     message: str

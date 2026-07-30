@@ -1,11 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from datetime import datetime
 
 from .. import schemas, models, database
 from ..auth import get_current_teacher
-from ..services import face_service
 
 router = APIRouter(
     prefix="/api/attendance",
@@ -13,61 +12,55 @@ router = APIRouter(
     dependencies=[Depends(get_current_teacher)]
 )
 
+# Face descriptors come from face-api.js (FaceRecognitionNet, 128-dim).
+# The established matching metric for this model is Euclidean (L2) distance;
+# distances below ~0.6 mean "same person". Slightly stricter default (0.55)
+# to reduce false accepts between different students.
+FACE_MATCH_THRESHOLD = 0.55
+
 @router.post("/recognize", response_model=schemas.AttendanceResponse)
-async def recognize_face(
-    file: UploadFile = File(...),
+def recognize_face(
+    request: schemas.FaceRecognizeRequest,
     current_teacher: models.Teacher = Depends(get_current_teacher),
     db: Session = Depends(database.get_db)
 ):
-    # Read image bytes
-    image_bytes = await file.read()
-    
-    try:
-        # Extract 512-dim embedding
-        embedding = face_service.extract_embedding(image_bytes)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-        
-    # Search for nearest face in database
-    # Since embeddings are normalized, l2_distance or cosine_distance both work.
-    # The lower the distance, the more similar they are.
-    # A safe threshold for cosine similarity with insightface buffalo_l is typically around 0.4.
-    # Lowered to 0.35 to tolerate pitch variations (looking up/down).
-    SIMILARITY_THRESHOLD = 0.35 
-    
-    # Using pgvector cosine_distance
-    # order_by limits to the nearest neighbor
+    """
+    Match a browser-computed face descriptor against the database.
+    Returns the closest student if the L2 distance is below the threshold.
+    """
+    # pgvector L2 distance — order ascending and take the closest embedding
+    distance_col = models.FaceEmbedding.embedding.l2_distance(request.embedding)
     stmt = (
-        select(models.FaceEmbedding)
-        .order_by(models.FaceEmbedding.embedding.cosine_distance(embedding.tolist()))
+        select(models.FaceEmbedding, distance_col.label("distance"))
+        .order_by(distance_col)
         .limit(1)
     )
-    
-    nearest_face = db.scalars(stmt).first()
-    
-    if not nearest_face:
+
+    row = db.execute(stmt).first()
+
+    if not row:
         raise HTTPException(status_code=404, detail="Belum ada data wajah siswa di database")
-        
-    # Calculate distance to see if it passes the threshold
-    import numpy as np
-    db_embedding = np.array(nearest_face.embedding)
-    similarity = face_service.cosine_similarity(embedding, db_embedding)
-    
-    if similarity < SIMILARITY_THRESHOLD:
+
+    nearest_face, distance = row[0], float(row[1])
+
+    if distance > FACE_MATCH_THRESHOLD:
         raise HTTPException(
-            status_code=404, 
-            detail=f"Wajah tidak dikenali (kemiripan: {similarity:.2f}). Pastikan pencahayaan cukup dan wajah terlihat jelas."
+            status_code=404,
+            detail=f"Wajah tidak dikenali (jarak: {distance:.2f}). Pastikan pencahayaan cukup dan wajah terlihat jelas."
         )
-        
+
     student = nearest_face.student
-    
+
+    # Convert distance to a 0..1 similarity score for display/logging
+    similarity = max(0.0, 1.0 - distance)
+
     return schemas.AttendanceResponse(
         student_id=student.id,
         student_name=student.name,
         class_name=student.class_name,
         message="Wajah berhasil dikenali. Menunggu konfirmasi.",
-        late_time=datetime.utcnow(), # Temporary time, frontend will use client time
-        similarity=float(similarity)
+        late_time=datetime.utcnow(),  # Temporary time, frontend will use client time
+        similarity=similarity
     )
 
 @router.post("/record", response_model=schemas.LateHistoryResponse)
@@ -89,23 +82,23 @@ def record_attendance(
         notes="Detected via Face Recognition (Manual Confirm)"
     )
     db.add(new_late)
-    
+
     # Update Student total_lates
     student.total_lates += 1
-    
+
     # Log activity
     log = models.ActivityLog(
         teacher_id=current_teacher.id,
         action="RECORD_LATE",
         details={
-            "student_id": str(student.id), 
+            "student_id": str(student.id),
             "similarity": float(request.similarity),
             "client_time": request.client_time.isoformat()
         }
     )
     db.add(log)
-    
+
     db.commit()
     db.refresh(new_late)
-    
+
     return new_late

@@ -39,6 +39,42 @@ def create_student(student_data: schemas.StudentCreate, db: Session = Depends(da
     db.refresh(new_student)
     return new_student
 
+@router.post("/register-with-faces", response_model=schemas.StudentResponse, status_code=status.HTTP_201_CREATED)
+def register_student_with_faces(request: schemas.StudentRegisterWithFacesRequest, db: Session = Depends(database.get_db)):
+    """
+    Atomically create a student AND all face embeddings in a single transaction.
+    Prevents orphan students (created but with no usable face) that occurred
+    when registration was split across multiple requests.
+    Also rejects exact duplicates (same name + same class) so a double-tap
+    or retry can never insert the same student twice.
+    """
+    formatted_class_name = format_class_name(request.class_name)
+
+    duplicate = db.query(models.Student).filter(
+        models.Student.name == request.name.strip(),
+        models.Student.class_name == formatted_class_name
+    ).first()
+    if duplicate:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Siswa '{request.name.strip()}' sudah terdaftar di kelas {formatted_class_name}"
+        )
+
+    new_student = models.Student(
+        name=request.name.strip(),
+        class_name=formatted_class_name,
+        address=request.address
+    )
+    db.add(new_student)
+    db.flush()  # get new_student.id before adding embeddings
+
+    for emb in request.embeddings:
+        db.add(models.FaceEmbedding(student_id=new_student.id, embedding=emb))
+
+    db.commit()
+    db.refresh(new_student)
+    return new_student
+
 @router.get("", response_model=List[schemas.StudentResponse])
 def get_students(
     class_name: Optional[str] = None, 

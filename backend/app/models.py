@@ -43,8 +43,10 @@ class FaceEmbedding(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     student_id = Column(UUID(as_uuid=True), ForeignKey("students.id"), nullable=False)
-    # Using 512 dimensions for InsightFace ArcFace models (adjust if using different model)
-    embedding = Column(Vector(512), nullable=False) 
+    # 128-dim face descriptor computed in the browser (face-api.js FaceRecognitionNet).
+    # Embeddings are extracted client-side because InsightFace/ONNX cannot run
+    # inside Vercel's serverless size/time limits.
+    embedding = Column(Vector(128), nullable=False) 
     image_path = Column(String, nullable=True) # URL to Supabase storage
     created_at = Column(DateTime, default=datetime.utcnow)
 
