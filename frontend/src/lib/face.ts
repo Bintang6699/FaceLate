@@ -38,6 +38,15 @@ export function loadFaceModels(): Promise<void> {
   if (!loadingPromise) {
     loadingPromise = (async () => {
       const faceapi = await getFaceApi();
+      
+      // Ensure TensorFlow uses WebGL backend for performance, preventing CPU freeze
+      try {
+        await faceapi.tf.setBackend('webgl');
+        await faceapi.tf.ready();
+      } catch (e) {
+        console.warn("WebGL backend failed to initialize, falling back to default.", e);
+      }
+
       await Promise.all([
         faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URI),
         faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URI),
@@ -45,9 +54,10 @@ export function loadFaceModels(): Promise<void> {
         faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URI),
       ]);
       modelsReady = true;
-    })().catch(() => {
+    })().catch((err) => {
       // Allow retry on next call if the download failed
       loadingPromise = null;
+      console.error(err);
       throw new Error("Gagal memuat model AI. Periksa koneksi internet lalu muat ulang halaman.");
     });
   }

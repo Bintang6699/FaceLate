@@ -73,6 +73,9 @@ export default function RegisterStudentPage() {
     setCapturing(true);
     setError("");
 
+    // Yield to the browser to paint the UI (spinner) before blocking thread with face-api
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
     try {
       // Use the helper to safely grab a canvas frame, ensuring videoWidth is handled
       const canvas = captureVideoFrame(videoRef.current, 640);

@@ -61,6 +61,9 @@ export default function AttendanceCameraPage() {
     setMessage("Analyzing face...");
     setRecentStudent(null);
 
+    // Yield to the browser to paint the scanning state before blocking
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
     try {
       // Use downscaled canvas for faster processing on mobile
       const frameCanvas = captureVideoFrame(videoRef.current, 480);
