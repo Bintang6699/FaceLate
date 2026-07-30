@@ -1,0 +1,5 @@
+setup.py
+uvicorn.egg-info/PKG-INFO
+uvicorn.egg-info/SOURCES.txt
+uvicorn.egg-info/dependency_links.txt
+uvicorn.egg-info/top_level.txt

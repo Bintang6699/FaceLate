@@ -1,0 +1,5 @@
+setup.py
+scipy.egg-info/PKG-INFO
+scipy.egg-info/SOURCES.txt
+scipy.egg-info/dependency_links.txt
+scipy.egg-info/top_level.txt

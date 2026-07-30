@@ -1,0 +1,5 @@
+setup.py
+pillow.egg-info/PKG-INFO
+pillow.egg-info/SOURCES.txt
+pillow.egg-info/dependency_links.txt
+pillow.egg-info/top_level.txt
