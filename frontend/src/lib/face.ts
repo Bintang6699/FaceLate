@@ -98,8 +98,18 @@ export class NoFaceDetectedError extends Error {
  * Detect the single most prominent face and return its 128-dim descriptor.
  * Throws NoFaceDetectedError when no face is visible.
  *
- * mode "accurate" uses SSD Mobilenet (best for registration photos),
- * mode "fast" uses TinyFaceDetector (best for the live scan loop).
+ * mode "accurate"  → tries SSD MobileNet then TinyFaceDetector as fallback
+ * mode "fast"      → TinyFaceDetector only (for real-time scan loop)
+ *
+ * KEY FIX FOR SIDE PROFILES:
+ * For enrollment (accurate mode) we NO LONGER chain .withFaceLandmarks() on the
+ * *initial* detection pass, because the landmark model was trained on frontal faces
+ * and almost always fails on left/right/up/down poses, causing the entire chain to
+ * return undefined even though the detector DID find the face.
+ * Instead we:
+ *   1. Detect with a very low threshold on both detectors.
+ *   2. For the winning detection box, run getFaceDescriptor from the recognition net
+ *      directly on the cropped+padded region — no landmarks needed.
  */
 export async function getFaceDescriptor(
   source: FaceSource,
@@ -108,30 +118,104 @@ export async function getFaceDescriptor(
   await loadFaceModels();
   const faceapi = await getFaceApi();
 
-  // EXTREMELY FORGIVING THRESHOLDS:
-  // 0.2 for fast, 0.15 for accurate. This allows side profiles (left/right/up/down) 
-  // and slightly blurry mobile camera shots to still be accepted during registration.
-  const detectorOptions =
-    mode === "fast"
-      ? new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.2 })
-      : new faceapi.SsdMobilenetv1Options({ maxResults: 1, minConfidence: 0.15 });
-
-  try {
+  // --- FAST MODE: used by the live scan loop (attendance, not enrollment) ---
+  if (mode === "fast") {
+    const opts = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.15 });
     const result = await faceapi
-      .detectSingleFace(source, detectorOptions)
+      .detectSingleFace(source, opts)
       .withFaceLandmarks()
       .withFaceDescriptor();
+    if (!result) throw new NoFaceDetectedError();
+    return Array.from(result.descriptor);
+  }
 
-    if (!result) {
-      throw new NoFaceDetectedError();
+  // --- ACCURATE MODE: used during enrollment ---
+  // Step 1: Detect a face bounding box using the most forgiving thresholds possible.
+  // We try BOTH detectors and take whichever found a face.
+  const ssdOpts  = new faceapi.SsdMobilenetv1Options({ maxResults: 1, minConfidence: 0.1 });
+  const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.1 });
+
+  let detection = await faceapi.detectSingleFace(source, ssdOpts);
+  if (!detection) {
+    detection = await faceapi.detectSingleFace(source, tinyOpts);
+  }
+
+  if (!detection) {
+    throw new NoFaceDetectedError();
+  }
+
+  // Step 2: Try the full pipeline (with landmarks) — this works well for frontal
+  // and slightly angled faces.
+  try {
+    const fullResult = await faceapi
+      .detectSingleFace(source, ssdOpts)
+      .withFaceLandmarks()
+      .withFaceDescriptor();
+    if (fullResult) return Array.from(fullResult.descriptor);
+  } catch (_) {
+    // landmark model failed — fall through to descriptor-only path
+  }
+
+  // Step 3 (FALLBACK for side profiles): landmarks failed but we DO have a bounding
+  // box. Extract the descriptor directly from the raw detection box.
+  // We create a cropped canvas, expand the box by 30% for context, then run the
+  // recognition network directly without needing landmarks.
+  try {
+    const srcCanvas = document.createElement("canvas");
+    let srcWidth: number, srcHeight: number;
+
+    if (source instanceof HTMLVideoElement) {
+      srcWidth  = source.videoWidth;
+      srcHeight = source.videoHeight;
+    } else if (source instanceof HTMLImageElement) {
+      srcWidth  = source.naturalWidth;
+      srcHeight = source.naturalHeight;
+    } else {
+      srcWidth  = (source as HTMLCanvasElement).width;
+      srcHeight = (source as HTMLCanvasElement).height;
     }
 
-    return Array.from(result.descriptor);
-  } catch (err: any) {
-    if (err instanceof NoFaceDetectedError) throw err;
-    console.error("Face detection error:", err);
-    throw new Error("Gagal memproses wajah. Pastikan model AI sudah dimuat dan kamera berfungsi.");
+    srcCanvas.width  = srcWidth;
+    srcCanvas.height = srcHeight;
+    const ctx = srcCanvas.getContext("2d")!;
+    ctx.drawImage(source as CanvasImageSource, 0, 0, srcWidth, srcHeight);
+
+    // Expand box by 40% so the network has enough context
+    const pad = 0.4;
+    const bx = Math.max(0, detection.box.x - detection.box.width  * pad);
+    const by = Math.max(0, detection.box.y - detection.box.height * pad);
+    const bw = Math.min(srcWidth  - bx, detection.box.width  * (1 + 2 * pad));
+    const bh = Math.min(srcHeight - by, detection.box.height * (1 + 2 * pad));
+
+    // Face recognition net expects 150×150
+    const faceCanvas = document.createElement("canvas");
+    faceCanvas.width  = 150;
+    faceCanvas.height = 150;
+    faceCanvas.getContext("2d")!.drawImage(srcCanvas, bx, by, bw, bh, 0, 0, 150, 150);
+
+    // @ts-ignore — computeFaceDescriptor accepts a canvas directly
+    const descriptor: Float32Array = await faceapi.nets.faceRecognitionNet.computeFaceDescriptor(faceCanvas);
+    if (descriptor && descriptor.length === 128) {
+      return Array.from(descriptor);
+    }
+  } catch (fallbackErr) {
+    console.warn("Descriptor fallback failed:", fallbackErr);
   }
+
+  // If everything failed, still throw so the UI can show an error
+  throw new NoFaceDetectedError();
+}
+
+/**
+ * Lightweight presence check for the live preview loop.
+ * Returns true if ANY face is found at very low thresholds.
+ * Does NOT compute descriptors — keeps the loop fast.
+ */
+export async function isFacePresent(source: FaceSource): Promise<boolean> {
+  const faceapi = await getFaceApi();
+  const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.1 });
+  const result = await faceapi.detectSingleFace(source, tinyOpts);
+  return !!result;
 }
 
 /** Helper to extract a safely downscaled canvas from a video stream for faster mobile processing */

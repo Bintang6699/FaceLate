@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
-import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError, captureVideoFrame, getFaceApi } from "@/lib/face";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError, captureVideoFrame, getFaceApi, isFacePresent } from "@/lib/face";
 import { CameraIcon, ArrowLeftIcon, UserPlusIcon, Loader2, CheckCircle2Icon, RefreshCcwIcon, CheckIcon } from "lucide-react";
 
 type CapturedFace = {
@@ -30,6 +30,15 @@ export default function RegisterStudentPage() {
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const [faceReady, setFaceReady] = useState(false);
   const [guidanceText, setGuidanceText] = useState("Posisikan wajah Anda di dalam bingkai");
+
+  // Per-angle instructions shown to user
+  const ANGLE_INSTRUCTIONS: Record<string, string> = {
+    "Depan"  : "Hadapkan wajah lurus ke kamera",
+    "Kiri"   : "Putar kepala ke KIRI perlahan",
+    "Kanan"  : "Putar kepala ke KANAN perlahan",
+    "Atas"   : "Tengadahkan kepala sedikit ke ATAS",
+    "Bawah"  : "Tundukkan kepala sedikit ke BAWAH",
+  };
 
   // Form fields
   const [name, setName] = useState("");
@@ -74,14 +83,20 @@ export default function RegisterStudentPage() {
   useEffect(() => {
     let animationFrameId: number;
     let stableFrames = 0;
-    const requiredStableFrames = 15; // about 1-1.5s
-    
+    // Frontal: require 12 stable frames (~1.2s). Side/Up/Down: only 8 (~0.8s)
+    // because the bounding box naturally shifts and jitters more on angled poses.
+    const isFrontal = ANGLES[currentAngleIndex] === "Depan";
+    const requiredStableFrames = isFrontal ? 12 : 8;
+    let running = true;
+
     const detectLoop = async () => {
+      if (!running) return;
+
       if (!videoRef.current || !modelsLoaded || step !== "camera" || capturingRef.current || submittingRef.current) {
         animationFrameId = requestAnimationFrame(detectLoop);
         return;
       }
-      
+
       const video = videoRef.current;
       if (video.readyState < 2) {
         animationFrameId = requestAnimationFrame(detectLoop);
@@ -89,59 +104,70 @@ export default function RegisterStudentPage() {
       }
 
       try {
-        const faceapi = await getFaceApi();
-        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 });
-        const result = await faceapi.detectSingleFace(video, options);
+        // Use lightweight isFacePresent instead of full pipeline — much faster,
+        // and critically: NOT blocked by the frontal-only landmark model.
+        const faceApi = await getFaceApi();
+        const opts = new faceApi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.1 });
+        const detected = await faceApi.detectSingleFace(video, opts);
 
-        if (result) {
-          const box = result.box;
-          const videoWidth = video.videoWidth;
-          const videoHeight = video.videoHeight;
-          
-          const faceArea = box.width * box.height;
-          const videoArea = videoWidth * videoHeight;
-          const faceRatio = faceArea / videoArea;
-          
-          const centerX = box.x + box.width / 2;
-          const centerY = box.y + box.height / 2;
-          
-          const isCentered = Math.abs(centerX - videoWidth / 2) < videoWidth * 0.2 && 
-                             Math.abs(centerY - videoHeight / 2) < videoHeight * 0.2;
-                             
-          let isGood = false;
-          
-          if (faceRatio < 0.05) {
-            setGuidanceText("Terlalu jauh, dekatkan wajah Anda");
+        if (detected) {
+          const box = detected.box;
+          const vW = video.videoWidth;
+          const vH = video.videoHeight;
+
+          const faceRatio = (box.width * box.height) / (vW * vH);
+          const centerX   = box.x + box.width  / 2;
+          const centerY   = box.y + box.height / 2;
+
+          // For frontal: require face to be roughly centered.
+          // For side/up/down angles: only check size (face will naturally be off-center).
+          const sizeOk = faceRatio >= 0.04 && faceRatio <= 0.55;
+          const posOk  = isFrontal
+            ? Math.abs(centerX - vW / 2) < vW * 0.25 && Math.abs(centerY - vH / 2) < vH * 0.3
+            : true; // side/up/down — don't enforce centering
+
+          if (!sizeOk && faceRatio < 0.04) {
+            setGuidanceText("Terlalu jauh — dekatkan wajah ke kamera");
+            setFaceReady(false);
             stableFrames = 0;
-          } else if (faceRatio > 0.45) {
-            setGuidanceText("Terlalu dekat, mundurkan wajah Anda");
+          } else if (!sizeOk && faceRatio > 0.55) {
+            setGuidanceText("Terlalu dekat — mundurkan wajah sedikit");
+            setFaceReady(false);
             stableFrames = 0;
-          } else if (!isCentered) {
-            setGuidanceText("Posisikan wajah di tengah bingkai oval");
+          } else if (!posOk) {
+            setGuidanceText("Wajah kurang di tengah — geser ke tengah frame");
+            setFaceReady(false);
             stableFrames = 0;
           } else {
-            setGuidanceText(`Posisi pas! Tahan wajah Anda...`);
-            isGood = true;
+            // Face is in a good position!
             stableFrames++;
-          }
-          
-          setFaceReady(isGood);
+            if (stableFrames < requiredStableFrames) {
+              setGuidanceText(`✓ Posisi pas! Tahan... (${stableFrames}/${requiredStableFrames})`);
+              setFaceReady(true);
+            } else {
+              setGuidanceText("📸 Auto-jepret!");
+              setFaceReady(true);
+            }
 
-          if (stableFrames >= requiredStableFrames && !capturingRef.current) {
-             capturePhoto();
-             stableFrames = 0;
+            if (stableFrames >= requiredStableFrames && !capturingRef.current) {
+              stableFrames = 0;
+              capturePhoto();
+              return; // pause loop — capturePhoto will reset capturingRef
+            }
           }
         } else {
-          setGuidanceText(`Tatap lurus dan ikuti instruksi hadap: ${ANGLES[currentAngleIndex]}`);
+          // No face detected — show the angle-specific instruction
+          setGuidanceText(ANGLE_INSTRUCTIONS[ANGLES[currentAngleIndex]] ?? "Posisikan wajah di dalam bingkai");
           setFaceReady(false);
           stableFrames = 0;
         }
-      } catch (err) {
-        // ignore live loop errors
+      } catch (_) {
+        // ignore transient errors in the preview loop
       }
-      
+
+      // ~10 fps is plenty for the preview — avoids blocking the main thread
       setTimeout(() => {
-        animationFrameId = requestAnimationFrame(detectLoop);
+        if (running) animationFrameId = requestAnimationFrame(detectLoop);
       }, 100);
     };
 
@@ -150,6 +176,7 @@ export default function RegisterStudentPage() {
     }
 
     return () => {
+      running = false;
       if (animationFrameId) cancelAnimationFrame(animationFrameId);
     };
   }, [step, modelsLoaded, stream, currentAngleIndex]);
@@ -275,12 +302,17 @@ export default function RegisterStudentPage() {
               <h4 className="text-lg font-bold text-slate-800">
                 Tahap {currentAngleIndex + 1} dari {ANGLES.length}
               </h4>
+              {/* Angle badge */}
               <p className="text-indigo-600 font-medium text-base mt-1 bg-indigo-50 py-1.5 px-4 rounded-xl inline-block">
                 Hadap <span className="font-bold uppercase underline">{ANGLES[currentAngleIndex]}</span>
               </p>
+              {/* Angle-specific instruction below the badge */}
+              <p className="text-slate-600 text-sm mt-2 font-medium">
+                {ANGLE_INSTRUCTIONS[ANGLES[currentAngleIndex]]}
+              </p>
             </div>
 
-            <div className="relative aspect-video bg-slate-100 rounded-xl overflow-hidden mb-5 flex items-center justify-center border-2 border-slate-300">
+            <div className="relative bg-slate-100 rounded-xl overflow-hidden mb-5 flex items-center justify-center border-2 border-slate-300" style={{aspectRatio: '4/3'}}>
               <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`} />
               
               {!stream && (
@@ -291,12 +323,25 @@ export default function RegisterStudentPage() {
               )}
               
               {stream && modelsLoaded && !capturing && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center p-4 pointer-events-none">
-                  {/* Oval guide with box-shadow to dim the outside */}
-                  <div className={`w-40 h-56 sm:w-48 sm:h-64 border-4 rounded-[100%] transition-colors duration-300 shadow-[0_0_0_9999px_rgba(0,0,0,0.4)] flex items-center justify-center ${faceReady ? 'border-emerald-500' : 'border-white/60'}`}>
-                    {faceReady && <CheckIcon className="w-12 h-12 text-emerald-500 animate-pulse" />}
+                <div className="absolute inset-0 flex flex-col items-center pointer-events-none" style={{justifyContent: 'center', paddingTop: '4%'}}>
+                  {/* Oval guide — slightly taller ratio (3:4) matches a face better */}
+                  <div className={`border-4 rounded-[100%] transition-all duration-300 shadow-[0_0_0_9999px_rgba(0,0,0,0.45)] flex items-center justify-center ${
+                    faceReady ? 'border-emerald-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.45),0_0_30px_4px_rgba(52,211,153,0.5)]' : 'border-white/60'
+                  }`}
+                    style={{width: '42%', paddingBottom: '56%', position: 'relative'}}
+                  >
+                    {faceReady && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <CheckIcon className="w-10 h-10 text-emerald-400 animate-pulse drop-shadow-lg" />
+                      </div>
+                    )}
                   </div>
-                  <div className={`absolute bottom-4 sm:bottom-6 px-4 py-2 rounded-full text-sm font-medium transition-colors ${faceReady ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'bg-black/60 backdrop-blur text-white'}`}>
+                  {/* Guidance text pill */}
+                  <div className={`mt-3 px-4 py-2 rounded-full text-sm font-semibold transition-all max-w-[90%] text-center ${
+                    faceReady
+                      ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/40'
+                      : 'bg-black/65 backdrop-blur-sm text-white'
+                  }`}>
                     {guidanceText}
                   </div>
                 </div>
