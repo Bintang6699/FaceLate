@@ -21,7 +21,7 @@ let faceapiPromise: Promise<FaceApi> | null = null;
 let loadingPromise: Promise<void> | null = null;
 let modelsReady = false;
 
-function getFaceApi(): Promise<FaceApi> {
+export function getFaceApi(): Promise<FaceApi> {
   if (!faceapiPromise) {
     faceapiPromise = import("@vladmandic/face-api");
   }

@@ -3,8 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { fetchApi } from "@/lib/api";
-import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError, captureVideoFrame } from "@/lib/face";
-import { CameraIcon, ArrowLeftIcon, UserPlusIcon, Loader2, CheckCircle2Icon, RefreshCcwIcon } from "lucide-react";
+import { getFaceDescriptor, loadFaceModels, NoFaceDetectedError, captureVideoFrame, getFaceApi } from "@/lib/face";
+import { CameraIcon, ArrowLeftIcon, UserPlusIcon, Loader2, CheckCircle2Icon, RefreshCcwIcon, CheckIcon } from "lucide-react";
 
 type CapturedFace = {
   dataUrl: string;
@@ -28,6 +28,8 @@ export default function RegisterStudentPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
+  const [faceReady, setFaceReady] = useState(false);
+  const [guidanceText, setGuidanceText] = useState("Posisikan wajah Anda di dalam bingkai");
 
   // Form fields
   const [name, setName] = useState("");
@@ -66,6 +68,91 @@ export default function RegisterStudentPage() {
       ms.getTracks().forEach(t => t.stop());
     }
   };
+
+  const currentAngleIndex = captures.length;
+
+  useEffect(() => {
+    let animationFrameId: number;
+    let stableFrames = 0;
+    const requiredStableFrames = 15; // about 1-1.5s
+    
+    const detectLoop = async () => {
+      if (!videoRef.current || !modelsLoaded || step !== "camera" || capturingRef.current || submittingRef.current) {
+        animationFrameId = requestAnimationFrame(detectLoop);
+        return;
+      }
+      
+      const video = videoRef.current;
+      if (video.readyState < 2) {
+        animationFrameId = requestAnimationFrame(detectLoop);
+        return;
+      }
+
+      try {
+        const faceapi = await getFaceApi();
+        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.3 });
+        const result = await faceapi.detectSingleFace(video, options);
+
+        if (result) {
+          const box = result.box;
+          const videoWidth = video.videoWidth;
+          const videoHeight = video.videoHeight;
+          
+          const faceArea = box.width * box.height;
+          const videoArea = videoWidth * videoHeight;
+          const faceRatio = faceArea / videoArea;
+          
+          const centerX = box.x + box.width / 2;
+          const centerY = box.y + box.height / 2;
+          
+          const isCentered = Math.abs(centerX - videoWidth / 2) < videoWidth * 0.2 && 
+                             Math.abs(centerY - videoHeight / 2) < videoHeight * 0.2;
+                             
+          let isGood = false;
+          
+          if (faceRatio < 0.05) {
+            setGuidanceText("Terlalu jauh, dekatkan wajah Anda");
+            stableFrames = 0;
+          } else if (faceRatio > 0.45) {
+            setGuidanceText("Terlalu dekat, mundurkan wajah Anda");
+            stableFrames = 0;
+          } else if (!isCentered) {
+            setGuidanceText("Posisikan wajah di tengah bingkai oval");
+            stableFrames = 0;
+          } else {
+            setGuidanceText(`Posisi pas! Tahan wajah Anda...`);
+            isGood = true;
+            stableFrames++;
+          }
+          
+          setFaceReady(isGood);
+
+          if (stableFrames >= requiredStableFrames && !capturingRef.current) {
+             capturePhoto();
+             stableFrames = 0;
+          }
+        } else {
+          setGuidanceText(`Tatap lurus dan ikuti instruksi hadap: ${ANGLES[currentAngleIndex]}`);
+          setFaceReady(false);
+          stableFrames = 0;
+        }
+      } catch (err) {
+        // ignore live loop errors
+      }
+      
+      setTimeout(() => {
+        animationFrameId = requestAnimationFrame(detectLoop);
+      }, 100);
+    };
+
+    if (step === "camera" && modelsLoaded && stream) {
+      detectLoop();
+    }
+
+    return () => {
+      if (animationFrameId) cancelAnimationFrame(animationFrameId);
+    };
+  }, [step, modelsLoaded, stream, currentAngleIndex]);
 
   const capturePhoto = async () => {
     if (!videoRef.current || capturingRef.current) return;
@@ -149,8 +236,6 @@ export default function RegisterStudentPage() {
     startCamera();
   };
 
-  const currentAngleIndex = captures.length;
-
   return (
     <div className="max-w-xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
       {/* Header */}
@@ -195,19 +280,33 @@ export default function RegisterStudentPage() {
               </p>
             </div>
 
-            <div className="relative aspect-video bg-slate-100 rounded-xl overflow-hidden mb-5 flex items-center justify-center border-2 border-dashed border-slate-300">
+            <div className="relative aspect-video bg-slate-100 rounded-xl overflow-hidden mb-5 flex items-center justify-center border-2 border-slate-300">
               <video ref={videoRef} autoPlay playsInline muted className={`w-full h-full object-cover ${facingMode === "user" ? "scale-x-[-1]" : ""}`} />
+              
               {!stream && (
                 <div className="absolute inset-0 bg-slate-100 text-slate-400 flex flex-col items-center justify-center">
                   <CameraIcon className="w-10 h-10 mb-2 opacity-50" />
                   <p className="text-sm">{error || "Memuat kamera..."}</p>
                 </div>
               )}
+              
+              {stream && modelsLoaded && !capturing && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center p-4 pointer-events-none">
+                  {/* Oval guide with box-shadow to dim the outside */}
+                  <div className={`w-40 h-56 sm:w-48 sm:h-64 border-4 rounded-[100%] transition-colors duration-300 shadow-[0_0_0_9999px_rgba(0,0,0,0.4)] flex items-center justify-center ${faceReady ? 'border-emerald-500' : 'border-white/60'}`}>
+                    {faceReady && <CheckIcon className="w-12 h-12 text-emerald-500 animate-pulse" />}
+                  </div>
+                  <div className={`absolute bottom-4 sm:bottom-6 px-4 py-2 rounded-full text-sm font-medium transition-colors ${faceReady ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/30' : 'bg-black/60 backdrop-blur text-white'}`}>
+                    {guidanceText}
+                  </div>
+                </div>
+              )}
+
               {capturing && (
-                <div className="absolute inset-0 bg-indigo-900/40 flex items-center justify-center">
+                <div className="absolute inset-0 bg-indigo-900/60 backdrop-blur-sm flex items-center justify-center">
                   <div className="text-center text-white">
                     <Loader2 className="w-10 h-10 animate-spin mx-auto mb-2" />
-                    <p className="text-sm font-medium">Memeriksa wajah...</p>
+                    <p className="text-sm font-medium">Menganalisa & Menyimpan...</p>
                   </div>
                 </div>
               )}
@@ -217,7 +316,7 @@ export default function RegisterStudentPage() {
 
             <div className="flex items-center justify-between mb-4">
               <p className="text-sm text-slate-500">
-                {modelsLoaded ? "Pastikan wajah berada di tengah kamera." : "Memuat model AI, mohon tunggu..."}
+                {modelsLoaded ? "Wajah akan dijepret otomatis jika posisi pas." : "Memuat model AI, mohon tunggu..."}
               </p>
               <button onClick={toggleCamera} className="flex items-center gap-2 text-sm font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-lg hover:bg-indigo-100 transition-colors">
                 <RefreshCcwIcon className="w-4 h-4" /> Tukar
@@ -227,7 +326,7 @@ export default function RegisterStudentPage() {
             {/* Progress dots for captured angles */}
             <div className="flex items-center justify-center gap-2 mb-4">
               {ANGLES.map((a, idx) => (
-                <div key={a} className={`w-2.5 h-2.5 rounded-full transition-colors ${idx < captures.length ? "bg-emerald-500" : idx === currentAngleIndex ? "bg-indigo-500" : "bg-slate-200"}`} title={a} />
+                <div key={a} className={`w-2.5 h-2.5 rounded-full transition-colors ${idx < captures.length ? "bg-emerald-500" : idx === currentAngleIndex ? "bg-indigo-500 animate-pulse" : "bg-slate-200"}`} title={a} />
               ))}
             </div>
 
@@ -237,7 +336,7 @@ export default function RegisterStudentPage() {
                 ? <><Loader2 className="w-5 h-5 animate-spin" /> Memproses...</>
                 : !modelsLoaded
                   ? <><Loader2 className="w-5 h-5 animate-spin" /> Memuat Model AI...</>
-                  : <><CameraIcon className="w-5 h-5" /> Jepret Hadap {ANGLES[currentAngleIndex]}</>
+                  : <><CameraIcon className="w-5 h-5" /> Jepret Manual ({ANGLES[currentAngleIndex]})</>
               }
             </button>
           </div>

@@ -24,6 +24,16 @@ export default function StudentsPage() {
   // Hard guard so rapid taps can never fire the same mutation twice
   const actionRef = useRef(false);
 
+  // Helper to safely parse DB timestamp (which might lack 'Z') as UTC, then format to WITA
+  const formatWITA = (dateString: string) => {
+    const isUTC = dateString.includes('Z') || dateString.includes('+');
+    const d = new Date(isUTC ? dateString : dateString + 'Z');
+    return {
+      date: d.toLocaleDateString("id-ID", { timeZone: "Asia/Makassar", weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+      time: d.toLocaleTimeString("id-ID", { timeZone: "Asia/Makassar", hour: '2-digit', minute: '2-digit' })
+    };
+  };
+
   const loadHistory = async (student: any) => {
     setHistoryStudent(student);
     setLoadingHistory(true);
@@ -461,10 +471,10 @@ export default function StudentsPage() {
                       </div>
                       <div>
                         <p className="font-semibold text-slate-800 dark:text-slate-200 text-base">
-                          {new Date(history.late_time).toLocaleDateString("id-ID", { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+                          {formatWITA(history.late_time).date}
                         </p>
                         <p className="text-sm text-primary font-bold mt-0.5">
-                          Pukul {new Date(history.late_time).toLocaleTimeString("id-ID", { hour: '2-digit', minute: '2-digit' })}
+                          Pukul {formatWITA(history.late_time).time} WITA
                         </p>
                         <p className="text-xs text-slate-500 mt-2 border-t border-slate-200 dark:border-slate-700 pt-2">
                           <span className="font-medium">Catatan:</span> {history.notes || "Otomatis via Face Recognition"}
