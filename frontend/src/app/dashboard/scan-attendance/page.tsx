@@ -85,11 +85,13 @@ export default function ScanAttendancePage() {
     await new Promise((resolve) => setTimeout(resolve, 100));
 
     try {
-      // Use downscaled canvas for faster processing on mobile
-      const frameCanvas = captureVideoFrame(videoRef.current, 480);
+      // Capture at 640px for better quality — "accurate" mode handles tilted
+      // faces via dual-detector + descriptor-only fallback (no landmark dependency).
+      const frameCanvas = captureVideoFrame(videoRef.current, 640);
 
-      // Face detection + descriptor extraction happen right here in the browser
-      const descriptor = await getFaceDescriptor(frameCanvas, "fast");
+      // Use "accurate" mode so side-profile scans use the same robust pipeline
+      // as enrollment (SSD → Tiny fallback → direct descriptor crop).
+      const descriptor = await getFaceDescriptor(frameCanvas, "accurate");
 
       const data = await fetchApi<RecognizeResult>("/attendance/recognize", {
         method: "POST",
@@ -262,11 +264,39 @@ export default function ScanAttendancePage() {
                     <span className="text-xs text-slate-500">Kelas</span>
                     <span className="text-sm font-semibold text-slate-800">{result.class_name}</span>
                   </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-xs text-slate-500">Kemiripan Wajah</span>
-                    <span className="text-sm font-semibold text-emerald-600">{(result.similarity * 100).toFixed(1)}%</span>
+
+                  {/* Confidence bar */}
+                  <div className="pt-1">
+                    <div className="flex justify-between items-center mb-1.5">
+                      <span className="text-xs text-slate-500">Kemiripan Wajah</span>
+                      <span className={`text-sm font-bold ${
+                        result.similarity >= 0.75 ? 'text-emerald-600'
+                        : result.similarity >= 0.60 ? 'text-amber-500'
+                        : 'text-red-500'
+                      }`}>{(result.similarity * 100).toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full h-2.5 bg-slate-200 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-700 ${
+                          result.similarity >= 0.75 ? 'bg-emerald-500'
+                          : result.similarity >= 0.60 ? 'bg-amber-400'
+                          : 'bg-red-400'
+                        }`}
+                        style={{ width: `${Math.min(100, result.similarity * 100).toFixed(1)}%` }}
+                      />
+                    </div>
+                    <p className={`text-[10px] mt-1 font-medium ${
+                      result.similarity >= 0.75 ? 'text-emerald-600'
+                      : result.similarity >= 0.60 ? 'text-amber-500'
+                      : 'text-red-500'
+                    }`}>
+                      {result.similarity >= 0.75 ? '✓ Kepercayaan tinggi'
+                        : result.similarity >= 0.60 ? '⚠ Kepercayaan sedang — periksa kembali wajah siswa'
+                        : '✗ Kepercayaan rendah — konfirmasi secara manual'}
+                    </p>
                   </div>
-                  <div className="flex justify-between items-center">
+
+                  <div className="flex justify-between items-center border-t border-slate-200 pt-2">
                     <span className="text-xs text-slate-500 flex items-center gap-1"><ClockIcon className="w-3 h-3" />Waktu (WITA)</span>
                     <span className="text-sm font-semibold text-slate-800">
                       {clientTime.toLocaleTimeString("id-ID", { timeZone: "Asia/Makassar", hour: '2-digit', minute: '2-digit', second: '2-digit' })} WITA
