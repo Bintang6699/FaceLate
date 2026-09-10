@@ -23,7 +23,7 @@ export default function LoginPage() {
 
     try {
       const formData = new URLSearchParams();
-      formData.append("username", email);
+      formData.append("username", email.trim());
       formData.append("password", password);
 
       const response = await fetchApi<{ access_token: string }>("/auth/login", {

@@ -26,7 +26,7 @@ export default function RegisterPage() {
     try {
       await fetchApi("/auth/register", {
         method: "POST",
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name: name.trim(), email: email.trim(), password }),
         requireAuth: false,
       });
 

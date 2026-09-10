@@ -13,8 +13,10 @@ router = APIRouter(
 
 @router.post("/register", response_model=schemas.TeacherResponse, status_code=status.HTTP_201_CREATED)
 def register_teacher(teacher_data: schemas.TeacherCreate, db: Session = Depends(database.get_db)):
-    # Check if teacher exists
-    db_teacher = db.query(models.Teacher).filter(models.Teacher.email == teacher_data.email).first()
+    # Check if teacher exists (case-insensitive)
+    email_clean = teacher_data.email.lower().strip()
+    teacher_data.email = email_clean # Save the clean version
+    db_teacher = db.query(models.Teacher).filter(models.Teacher.email.ilike(email_clean)).first()
     if db_teacher:
         raise HTTPException(status_code=400, detail="Email already registered")
     
@@ -36,8 +38,10 @@ def register_teacher(teacher_data: schemas.TeacherCreate, db: Session = Depends(
 
 @router.post("/login", response_model=schemas.Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(database.get_db)):
-    # Find teacher by email
-    teacher = db.query(models.Teacher).filter(models.Teacher.email == form_data.username).first()
+    # Find teacher by email (case-insensitive and trimmed)
+    email_clean = form_data.username.lower().strip()
+    # In PostgreSQL, we can use ilike for case-insensitive match or just lower() the column
+    teacher = db.query(models.Teacher).filter(models.Teacher.email.ilike(email_clean)).first()
     
     if not teacher or not auth.verify_password(form_data.password, teacher.password_hash):
         raise HTTPException(
